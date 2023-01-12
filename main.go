@@ -7,7 +7,6 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -28,6 +27,7 @@ var log = logrus.New()
 func main() {
 	port := 8080
 	level := uint(2)
+	configPath := defaultConfigFilename
 
 	app := &cli.App{
 		Name:  "proxyutil",
@@ -49,6 +49,13 @@ func main() {
 				Usage:       "enable verbose logging. 0 = panic, 1 = fatal, 2 = error, 3 = warn, 4 = info, 5 = debug, 6 = trace",
 				Destination: &level,
 			},
+			&cli.PathFlag{
+				Name:        "config",
+				Aliases:     []string{"c"},
+				EnvVars:     []string{"PROXYUTIL_CONFIG"},
+				Value:       defaultConfigFilename,
+				Destination: &configPath,
+			},
 		},
 
 		Before: func(ctx *cli.Context) error {
@@ -57,19 +64,36 @@ func main() {
 		},
 
 		Action: func(c *cli.Context) error {
-			if c.NArg() == 0 {
-				return fmt.Errorf("no proxy specified")
-			}
-
 			args := c.Args().Slice()
 			proxies := make([]Proxy, 0, len(args))
+			if _, err := os.Stat(configPath); err == nil {
+				f, err := os.Open(configPath)
+				if err != nil {
+					return err
+				}
+
+				configProxies, err := Parse(f)
+				if err != nil {
+					f.Close()
+					log.Fatalln(err)
+					return nil
+				}
+				f.Close()
+
+				proxies = append(proxies, configProxies...)
+			}
 
 			for _, arg := range args {
 				proxy, err := parseProxy(arg)
 				if err != nil {
 					log.Fatalln(err)
+					return nil
 				}
 				proxies = append(proxies, proxy)
+			}
+
+			if len(proxies) == 0 {
+				return fmt.Errorf("no proxy specified")
 			}
 
 			for i := range proxies {
@@ -100,23 +124,6 @@ func main() {
 	}
 
 	log.Fatal(app.Run(os.Args))
-}
-
-func parseProxy(arg string) (Proxy, error) {
-	subP, uri, ok := strings.Cut(arg, ":")
-	if !ok {
-		return Proxy{}, fmt.Errorf("invalid proxy: %s", arg)
-	}
-
-	u, err := url.Parse(uri)
-	if err != nil {
-		return Proxy{}, fmt.Errorf("invalid uri: %s", uri)
-	}
-
-	return Proxy{
-		SubPath: subP,
-		URI:     u,
-	}, nil
 }
 
 // reqLogger returns a request logging middleware
